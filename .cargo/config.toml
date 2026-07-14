@@ -1,0 +1,15 @@
+# .cargo/config.toml
+
+[build]
+# Default to compiling for bare-metal x86_64
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tlink.ld", # We will write this linker script next
+]
+
+[target.aarch64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tlink.ld", # ARM64 will also need a linker script
+]

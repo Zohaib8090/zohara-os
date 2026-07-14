@@ -1,0 +1,19 @@
+[package]
+name = "zohara"
+version = "0.1.0"
+edition = "2021" # We use 2021 as it has the most stable bare-metal support
+
+[dependencies]
+
+# Optimize our kernel builds
+[profile.dev]
+panic = "abort" # Bare-metal doesn't have stack unwinding, so we abort on panic
+
+[profile.release]
+panic = "abort"
+lto = true      # Link-TimeOptimization makes the kernel binary smaller and faster
+[[bin]]
+name = "zohara"
+path = "src/main.rs"
+test = false
+bench = false

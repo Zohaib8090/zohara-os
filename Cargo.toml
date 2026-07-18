@@ -17,3 +17,6 @@ name = "zohara"
 path = "src/main.rs"
 test = false
 bench = false
+
+[features]
+debug = []

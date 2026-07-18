@@ -1,31 +1,33 @@
-/* link.ld */
-ENTRY(kernel_main)
+ENTRY(_start)
 
 SECTIONS {
-    /* Standard load address for bootloaders is 1MB */
-    . = 1M;
+    . = 0x40000000;
 
-    .text :
+    .text : ALIGN(4K)
     {
-        /* Put the executable code here */
+        KEEP(*(.text._start))
         *(.text .text.*)
     }
 
-    .rodata :
+    .rodata : ALIGN(4K)
     {
-        /* Read-only data (like static strings) */
         *(.rodata .rodata.*)
     }
 
-    .data :
+    .data : ALIGN(4K)
     {
-        /* Read-write initialized data */
         *(.data .data.*)
     }
 
-    .bss :
+    .bss : ALIGN(4K)
     {
-        /* Read-write uninitialized data (zero-filled) */
+        bss_start = .;       /* Add this: Define the start symbol */
         *(.bss .bss.*)
+        *(COMMON)            /* Add this: Include common symbols */
+        bss_end = .;         /* Add this: Define the end symbol */
     }
+
+    /* Mark the end of the kernel image. Used by the frame allocator to
+       avoid handing out frames that overlap the kernel/heap/bitmap. */
+    _end = .;
 }

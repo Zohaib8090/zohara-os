@@ -14,6 +14,7 @@
 //! When tasks exit, their frames are reclaimed via `deallocate_frame`.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::spinlock::SpinLock;
 
 pub const FRAME_SIZE: usize = 4096;
 
@@ -37,6 +38,9 @@ static mut TOTAL_RAM: usize = 0;
 
 /// Scan hint so allocate_frame doesn't restart from 0 every time.
 static NEXT_FREE: AtomicUsize = AtomicUsize::new(0);
+
+/// Global lock protecting bitmap mutations — prevents double-allocation under SMP.
+static FRAME_LOCK: SpinLock<()> = SpinLock::new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysFrame {
@@ -110,6 +114,7 @@ unsafe fn set_free(frame: usize) {
 }
 
 pub unsafe fn mark_used(start: usize, end: usize) {
+    let _guard = FRAME_LOCK.lock();
     let ram_end = RAM_BASE + TOTAL_RAM;
     if end <= start || start >= ram_end { return; }
     let first = frame_of(start);
@@ -145,9 +150,10 @@ pub fn init() {
     }
 }
 
-static mut ALLOC_COUNT: usize = 0;
+static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn allocate_frame() -> Option<PhysFrame> {
+    let _guard = FRAME_LOCK.lock();
     unsafe {
         let words = ACTUAL_WORDS;
         let count = ACTUAL_FRAME_COUNT;
@@ -160,14 +166,10 @@ pub fn allocate_frame() -> Option<PhysFrame> {
                 let bit = bits.trailing_ones() as usize;
                 let frame = w * 64 + bit;
                 if frame < count {
-                    // Check for double-allocation: was this frame already in use?
-                    if (bits >> bit) & 1 != 0 {
-                        crate::println!("[FRAME BUG] Double-alloc! frame={} word={} bit={}", frame, w, bit);
-                        loop { unsafe { core::arch::asm!("cli"); core::arch::asm!("hlt"); } }
-                    }
                     set_used(frame);
                     NEXT_FREE.store(w, Ordering::Relaxed);
-                    ALLOC_COUNT += 1;
+                    ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+                    crate::stats::count_frame_alloc();
                     return Some(PhysFrame { number: frame });
                 }
             }
@@ -179,13 +181,10 @@ pub fn allocate_frame() -> Option<PhysFrame> {
                 let bit = bits.trailing_ones() as usize;
                 let frame = w * 64 + bit;
                 if frame < count {
-                    if (bits >> bit) & 1 != 0 {
-                        crate::println!("[FRAME BUG] Double-alloc! frame={} word={} bit={}", frame, w, bit);
-                        loop { unsafe { core::arch::asm!("cli"); core::arch::asm!("hlt"); } }
-                    }
                     set_used(frame);
                     NEXT_FREE.store(w, Ordering::Relaxed);
-                    ALLOC_COUNT += 1;
+                    ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+                    crate::stats::count_frame_alloc();
                     return Some(PhysFrame { number: frame });
                 }
             }
@@ -196,10 +195,12 @@ pub fn allocate_frame() -> Option<PhysFrame> {
 }
 
 pub fn alloc_count() -> usize {
-    unsafe { ALLOC_COUNT }
+    ALLOC_COUNT.load(Ordering::Relaxed)
 }
 
 pub fn deallocate_frame(frame: PhysFrame) {
+    let _guard = FRAME_LOCK.lock();
     if frame.number >= unsafe { ACTUAL_FRAME_COUNT } { return; }
     unsafe { set_free(frame.number) }
+    crate::stats::count_frame_free();
 }

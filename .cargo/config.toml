@@ -8,7 +8,7 @@ rustflags = [
     "-C", "link-arg=-no-pie",
 ]
 # Added the isa-debug-exit device at the end!
-runner = "qemu-system-x86_64 -nographic  -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -kernel"
+runner = "qemu-system-x86_64 -nographic -no-reboot -drive file=zohara_disk.img,format=raw,if=ide,index=0,media=disk -device isa-debug-exit,iobase=0xf4,iosize=0x04 -kernel"
 
 [target.armv7a-none-eabi]
 rustflags = [

@@ -10,6 +10,7 @@ pub struct Table {
 const P_PRESENT: u64 = 1 << 0;
 const P_WRITE: u64 = 1 << 1;
 const P_USER: u64 = 1 << 2;
+const P_PCD: u64 = 1 << 4;     // Page Cache Disable (uncacheable) — bit 4, NOT bit 3!
 const P_SIZE: u64 = 1 << 7;
 const P_NX: u64 = 1 << 63;
 
@@ -22,6 +23,10 @@ fn page_4k(pa: u64, writable: bool, user: bool, executable: bool) -> u64 {
     if user { f |= P_USER; }
     if !executable { f |= P_NX; }
     pa | f
+}
+/// 4K page with Uncacheable memory type (for MMIO like LAPIC).
+fn page_4k_uc(pa: u64) -> u64 {
+    pa | P_PRESENT | P_WRITE | P_PCD
 }
 
 unsafe fn zero_table(table: *mut Table) {
@@ -36,6 +41,138 @@ fn alloc_table_or_halt() -> PhysFrame {
 }
 
 static mut KERNEL_PML4_PA: usize = 0;
+
+/// Map a single 4K page at the given virtual address to the same physical
+/// address (identity mapping). Creates intermediate page tables as needed.
+///
+/// # Safety
+/// Caller must ensure `virt` is a valid page-aligned address.
+pub unsafe fn map_page(virt: usize) {
+    let pml4_idx = (virt >> 39) & 0x1FF;
+    let pdpt_idx = (virt >> 30) & 0x1FF;
+    let pd_idx   = (virt >> 21) & 0x1FF;
+    let pt_idx   = (virt >> 12) & 0x1FF;
+    let phys = virt; // identity mapping
+
+    let pml4 = KERNEL_PML4_PA as *mut Table;
+
+    // PML4 → PDPT
+    let pdpt_pa = if (*pml4).entries[pml4_idx] & P_PRESENT != 0 {
+        (*pml4).entries[pml4_idx] as usize & 0x000F_FFFF_FFFF_F000
+    } else {
+        let f = alloc_table_or_halt();
+        let pa = f.start_address();
+        zero_table(pa as *mut Table);
+        (*pml4).entries[pml4_idx] = table_entry(pa as u64);
+        pa
+    };
+
+    // PDPT → PD
+    let pdpt = pdpt_pa as *mut Table;
+    let pd_pa = if (*pdpt).entries[pdpt_idx] & P_PRESENT != 0 {
+        (*pdpt).entries[pdpt_idx] as usize & 0x000F_FFFF_FFFF_F000
+    } else {
+        let f = alloc_table_or_halt();
+        let pa = f.start_address();
+        zero_table(pa as *mut Table);
+        (*pdpt).entries[pdpt_idx] = table_entry(pa as u64);
+        pa
+    };
+
+    // PD → PT
+    let pd = pd_pa as *mut Table;
+    let pt_pa = if (*pd).entries[pd_idx] & P_PRESENT != 0 {
+        if (*pd).entries[pd_idx] & P_SIZE != 0 {
+            // 2MB page — need to split into 4K pages
+            let old_2mb_base = (*pd).entries[pd_idx] & 0x000F_FFFF_FFE0_0000;
+            let f = alloc_table_or_halt();
+            let new_pt_pa = f.start_address();
+            zero_table(new_pt_pa as *mut Table);
+            let pt = new_pt_pa as *mut Table;
+            for i in 0..512u64 {
+                (*pt).entries[i as usize] = page_4k(old_2mb_base + i * 0x1000, true, false, true);
+            }
+            (*pd).entries[pd_idx] = table_entry(new_pt_pa as u64);
+            new_pt_pa
+        } else {
+            (*pd).entries[pd_idx] as usize & 0x000F_FFFF_FFFF_F000
+        }
+    } else {
+        let f = alloc_table_or_halt();
+        let pa = f.start_address();
+        zero_table(pa as *mut Table);
+        (*pd).entries[pd_idx] = table_entry(pa as u64);
+        pa
+    };
+
+    // PT → 4K page
+    let pt = pt_pa as *mut Table;
+    (*pt).entries[pt_idx] = page_4k(phys as u64, true, false, true);
+
+    // Flush TLB for this address
+    core::arch::asm!("invlpg [{}]", in(reg) virt);
+}
+
+/// Identity-map a 4K page as Uncacheable (UC) — required for MMIO like LAPIC.
+pub unsafe fn map_page_uc(virt: usize) {
+    let pml4_idx = (virt >> 39) & 0x1FF;
+    let pdpt_idx = (virt >> 30) & 0x1FF;
+    let pd_idx   = (virt >> 21) & 0x1FF;
+    let pt_idx   = (virt >> 12) & 0x1FF;
+    let phys = virt;
+
+    let pml4 = KERNEL_PML4_PA as *mut Table;
+
+    let pdpt_pa = if (*pml4).entries[pml4_idx] & P_PRESENT != 0 {
+        (*pml4).entries[pml4_idx] as usize & 0x000F_FFFF_FFFF_F000
+    } else {
+        let f = alloc_table_or_halt();
+        let pa = f.start_address();
+        zero_table(pa as *mut Table);
+        (*pml4).entries[pml4_idx] = table_entry(pa as u64);
+        pa
+    };
+
+    let pdpt = pdpt_pa as *mut Table;
+    let pd_pa = if (*pdpt).entries[pdpt_idx] & P_PRESENT != 0 {
+        (*pdpt).entries[pdpt_idx] as usize & 0x000F_FFFF_FFFF_F000
+    } else {
+        let f = alloc_table_or_halt();
+        let pa = f.start_address();
+        zero_table(pa as *mut Table);
+        (*pdpt).entries[pdpt_idx] = table_entry(pa as u64);
+        pa
+    };
+
+    let pd = pd_pa as *mut Table;
+    let pt_pa = if (*pd).entries[pd_idx] & P_PRESENT != 0 {
+        if (*pd).entries[pd_idx] & P_SIZE != 0 {
+            let old_2mb_base = (*pd).entries[pd_idx] & 0x000F_FFFF_FFE0_0000;
+            let f = alloc_table_or_halt();
+            let new_pt_pa = f.start_address();
+            zero_table(new_pt_pa as *mut Table);
+            let pt = new_pt_pa as *mut Table;
+            for i in 0..512u64 {
+                (*pt).entries[i as usize] = page_4k(old_2mb_base + i * 0x1000, true, false, true);
+            }
+            (*pd).entries[pd_idx] = table_entry(new_pt_pa as u64);
+            new_pt_pa
+        } else {
+            (*pd).entries[pd_idx] as usize & 0x000F_FFFF_FFFF_F000
+        }
+    } else {
+        let f = alloc_table_or_halt();
+        let pa = f.start_address();
+        zero_table(pa as *mut Table);
+        (*pd).entries[pd_idx] = table_entry(pa as u64);
+        pa
+    };
+
+    let pt = pt_pa as *mut Table;
+    (*pt).entries[pt_idx] = page_4k_uc(phys as u64);
+
+    core::arch::asm!("invlpg [{}]", in(reg) virt);
+}
 
 pub fn init() {
     let pml4 = alloc_table_or_halt();
@@ -74,7 +211,7 @@ pub const USER_BASE_VA: usize = 0x0040_0000;
 /// exist (set up by `create_user_page_tables`).
 ///
 /// If the PD entry is already a PT pointer (not 2 MiB), just return it.
-unsafe fn map_user_page(pml4_pa: usize, virt: usize) -> usize {
+pub unsafe fn map_user_page(pml4_pa: usize, virt: usize) -> usize {
     let pml4_idx = (virt >> 39) & 0x1FF;
     let pdpt_idx = (virt >> 30) & 0x1FF;
     let pd_idx   = (virt >> 21) & 0x1FF;

@@ -112,3 +112,27 @@ pub unsafe fn copy_to_user(
 
     Ok(len)
 }
+
+/// Copy a null-terminated string from userspace into a kernel buffer.
+///
+/// Returns the string content (without null terminator) or an error.
+pub unsafe fn copy_from_user_cstr(
+    task_cr3: usize,
+    user_ptr: usize,
+    max_len: usize,
+) -> Result<alloc::string::String, isize> {
+    let mut buf = [0u8; 256];
+    let len = max_len.min(255);
+    let mut i = 0;
+    while i < len {
+        if !crate::arch::paging::is_user_mapped(task_cr3, user_ptr + i) {
+            return Err(EFAULT);
+        }
+        let byte = core::ptr::read_volatile((user_ptr + i) as *const u8);
+        if byte == 0 { break; }
+        buf[i] = byte;
+        i += 1;
+    }
+    let s = alloc::string::String::from(core::str::from_utf8(&buf[..i]).unwrap_or(""));
+    Ok(s)
+}

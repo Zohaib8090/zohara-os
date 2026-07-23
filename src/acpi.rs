@@ -62,12 +62,70 @@ fn find_rsdp() -> Option<usize> {
     let ebda_addr = ebda_seg << 4; // convert segment to physical
     if ebda_addr > 0 {
         if let Some(p) = scan_for_rsdp(ebda_addr, 0x400) {
+            crate::println!("[ACPI] RSDP found at EBDA 0x{:x}", p);
             return Some(p);
         }
     }
 
     // 2. Search 0xE0000..0xFFFFF (128 KB of ROM space)
-    scan_for_rsdp(0xE0000, 0x20000)
+    if let Some(p) = scan_for_rsdp(0xE0000, 0x20000) {
+        crate::println!("[ACPI] RSDP found at 0x{:x}", p);
+        return Some(p);
+    }
+
+    // 3. Search 0x80000..0xDFFFF (additional BIOS area)
+    if let Some(p) = scan_for_rsdp(0x80000, 0x60000) {
+        crate::println!("[ACPI] RSDP found at 0x{:x}", p);
+        return Some(p);
+    }
+
+    // 4. On UEFI, RSDP is in regular RAM — scan the multiboot memory map.
+    // Temporarily map each region through the page tables to scan it.
+    crate::println!("[ACPI] Scanning memory map for RSDP (with page table mapping)...");
+    unsafe {
+        extern "C" {
+            static mb_info: u64;
+        }
+        let info = mb_info as usize;
+        if info != 0 {
+            let flags = *((info + 0) as *const u32);
+            if flags & (1 << 6) != 0 {
+                let mmap_addr = *((info + 48) as *const u32) as usize;
+                let mmap_len = *((info + 44) as *const u32) as usize;
+                if mmap_addr > 0 && mmap_len > 0 && mmap_addr < 0x40000000 {
+                    let mut offset = 0usize;
+                    while offset + 24 <= mmap_len {
+                        let entry = (mmap_addr + offset) as *const u8;
+                        let entry_size = *((entry as *const u32)) as usize;
+                        let base = *((entry.add(4) as *const u64)) as usize;
+                        let len = *((entry.add(12) as *const u64)) as usize;
+                        let typ = *((entry.add(20) as *const u32)) as u32;
+
+                        // Scan usable (type 1) and ACPI-reclaimable (type 3) regions
+                        if (typ == 1 || typ == 3) && len > 0x10000 && base > 0x100000 {
+                            // Map region pages through page tables so we can read them
+                            let page_base = base & !0x1FFFFF;
+                            let page_count = (len + 0x1FFFFF) / 0x200000;
+                            for i in 0..page_count {
+                                let addr = page_base + i * 0x200000;
+                                crate::paging::map_page(addr);
+                            }
+
+                            let scan_end = core::cmp::min(base + len, 0xFFFFFFFF);
+                            if let Some(p) = scan_for_rsdp(base, scan_end - base) {
+                                crate::println!("[ACPI] RSDP found at 0x{:x} (type {})", p, typ);
+                                return Some(p);
+                            }
+                        }
+                        offset += if entry_size > 0 { entry_size + 4 } else { 24 };
+                    }
+                }
+            }
+        }
+    }
+
+    crate::println!("[ACPI] RSDP not found");
+    None
 }
 
 fn scan_for_rsdp(start: usize, len: usize) -> Option<usize> {

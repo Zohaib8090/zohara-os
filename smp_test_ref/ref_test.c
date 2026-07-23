@@ -109,6 +109,26 @@ static void delay_ms(uint32_t ms) {
 }
 
 void main(void) {
+    /* Force VGA text mode 3 (GRUB may leave it in graphics mode) */
+    /* Set Sequencer */
+    outb(0x3C4, 0x01); outb(0x3C5, 0x01); /* reset */
+    outb(0x3C4, 0x00); outb(0x3C5, 0x03); /* clocking mode */
+    outb(0x3C4, 0x02); outb(0x3C5, 0x0F); /* map mask */
+    outb(0x3C4, 0x03); outb(0x3C5, 0x00); /* character select */
+    outb(0x3C4, 0x04); outb(0x3C5, 0x0E); /* memory mode */
+    /* Set CRTC */
+    outb(0x3D4, 0x03); outb(0x3D5, 0x00); /* underline */
+    outb(0x3D4, 0x09); outb(0x3D5, 0x0F); /* max scan line */
+    outb(0x3D4, 0x14); outb(0x3D5, 0x00); /* underline */
+    outb(0x3D4, 0x17); outb(0x3D5, 0xA3); /* mode control */
+    /* Set Attribute Controller: clear palette */
+    inb(0x3DA);
+    for (int i = 0; i < 16; i++) {
+        outb(0x3C0, i);
+        outb(0x3C0, i);
+    }
+    outb(0x3C0, 0x20); /* enable display */
+
     /* Clear VGA screen */
     for (int i = 0; i < 80 * 25; i++) vga[i] = (vga_color << 8) | ' ';
 

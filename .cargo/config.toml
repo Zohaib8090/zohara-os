@@ -1,5 +1,4 @@
 [build]
-# Let's default to ARM64 for now since that's where our UART driver is!
 target = "aarch64-unknown-none"
 
 [target.x86_64-unknown-none]
@@ -7,7 +6,6 @@ rustflags = [
     "-C", "relocation-model=static",
     "-C", "link-arg=-no-pie",
 ]
-# Added the isa-debug-exit device at the end!
 runner = "qemu-system-x86_64 -nographic -no-reboot -drive file=zohara_disk.img,format=raw,if=ide,index=0,media=disk -device isa-debug-exit,iobase=0xf4,iosize=0x04 -kernel"
 
 [target.armv7a-none-eabi]
@@ -19,5 +17,4 @@ rustflags = [
 rustflags = [
     "-C", "link-arg=-Tlink.ld",
 ]
-# Added runner for aarch64 to boot our virt machine
 runner = "qemu-system-aarch64 -machine virt -m 1024 -cpu cortex-a53 -nographic -kernel"

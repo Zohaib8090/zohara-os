@@ -8,6 +8,7 @@ pub mod paging;
 pub mod page_fault;
 pub mod syscall;
 pub mod e820;
+pub mod framebuffer;
 
 pub use crate::keyboard::try_get_key;
 
@@ -140,6 +141,70 @@ pub fn write_serial(byte: u8) {
             core::arch::asm!("in al, dx", out("al") status, in("dx") 0x3FDu16);
         }
         core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") byte);
+    }
+}
+
+/// VGA text-mode state for bare-metal output
+static mut VGA_ROW: usize = 0;
+static mut VGA_COL: usize = 0;
+const VGA_BUF: *mut u16 = 0xB8000 as *mut u16;
+const VGA_COLOR: u16 = 0x0F; /* white on black */
+
+pub fn vga_init() {
+    unsafe {
+        /* Force VGA text mode 3 via CRTC/Sequencer registers */
+        /* Sequencer */
+        core::arch::asm!("out dx, al", in("dx") 0x3C4u16, in("al") 0x01u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C5u16, in("al") 0x01u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C4u16, in("al") 0x00u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C5u16, in("al") 0x03u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C4u16, in("al") 0x02u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C5u16, in("al") 0x0Fu8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C4u16, in("al") 0x04u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3C5u16, in("al") 0x0Eu8);
+        /* CRTC */
+        core::arch::asm!("out dx, al", in("dx") 0x3D4u16, in("al") 0x03u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3D5u16, in("al") 0x00u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3D4u16, in("al") 0x09u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3D5u16, in("al") 0x0Fu8);
+        core::arch::asm!("out dx, al", in("dx") 0x3D4u16, in("al") 0x17u8);
+        core::arch::asm!("out dx, al", in("dx") 0x3D5u16, in("al") 0xA3u8);
+        /* Clear screen */
+        for i in 0..(80 * 25) {
+            core::ptr::write_volatile(VGA_BUF.add(i), (VGA_COLOR << 8) | (b' ' as u16));
+        }
+        VGA_ROW = 0;
+        VGA_COL = 0;
+    }
+}
+
+pub fn write_vga(byte: u8) {
+    unsafe {
+        if byte == b'\n' {
+            VGA_COL = 0;
+            VGA_ROW += 1;
+        } else {
+            let idx = VGA_ROW * 80 + VGA_COL;
+            if idx < 80 * 25 {
+                core::ptr::write_volatile(VGA_BUF.add(idx), (VGA_COLOR << 8) | (byte as u16));
+            }
+            VGA_COL += 1;
+        }
+        if VGA_COL >= 80 {
+            VGA_COL = 0;
+            VGA_ROW += 1;
+        }
+        if VGA_ROW >= 25 {
+            /* Scroll: move lines up */
+            for i in 0..(80 * 24) {
+                let val = core::ptr::read_volatile(VGA_BUF.add(i + 80));
+                core::ptr::write_volatile(VGA_BUF.add(i), val);
+            }
+            for i in (80 * 24)..(80 * 25) {
+                core::ptr::write_volatile(VGA_BUF.add(i), (VGA_COLOR << 8) | (b' ' as u16));
+            }
+            VGA_ROW = 24;
+        }
     }
 }
 

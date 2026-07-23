@@ -1,10 +1,11 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x40000000;
+    . = 0x200000;
 
     .text : ALIGN(4K)
     {
+        KEEP(*(.multiboot))
         KEEP(*(.text._start))
         *(.text .text.*)
     }
@@ -21,13 +22,11 @@ SECTIONS {
 
     .bss : ALIGN(4K)
     {
-        bss_start = .;       /* Add this: Define the start symbol */
+        bss_start = .;
         *(.bss .bss.*)
-        *(COMMON)            /* Add this: Include common symbols */
-        bss_end = .;         /* Add this: Define the end symbol */
+        *(COMMON)
+        bss_end = .;
     }
 
-    /* Mark the end of the kernel image. Used by the frame allocator to
-       avoid handing out frames that overlap the kernel/heap/bitmap. */
     _end = .;
 }

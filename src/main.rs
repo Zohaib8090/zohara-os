@@ -67,6 +67,8 @@ impl fmt::Write for KernelWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
             arch::write_serial(byte);
+            arch::write_vga(byte);
+            arch::framebuffer::framebuffer_put_char(byte);
         }
         Ok(())
     }
@@ -161,7 +163,10 @@ fn spawn_userspace_task(name: &str, code: &[u8]) -> Result<usize, &'static str> 
 #[no_mangle]
 pub extern "C" fn kernel_main() -> ! {
     #[cfg(target_arch = "x86_64")]
-    arch::init_sse();
+    {
+        arch::vga_init();  /* VGA text mode — works on BIOS */
+        arch::init_sse();
+    }
 
     #[cfg(feature = "debug")]
     println!("Zohara kernel is booting...");
@@ -176,20 +181,46 @@ pub extern "C" fn kernel_main() -> ! {
 
     #[cfg(target_arch = "x86_64")]
     {
-        let ram_size = arch::e820::detect_memory();
-        frame::set_total_ram(ram_size);
+        // Phase 1: Initialize with conservative 1GB default.
+        // The real memory map may be above 1GB and unreadable before paging::init().
+        frame::set_total_ram(1 << 30); // 1 GiB default
         frame::init();
         keyboard::init_buffer();
         interrupts::init_idt();
         arch::page_fault::init();
         syscall::init();
 
-        // ACPI discovery must happen BEFORE paging::init() because
-        // ACPI tables (RSDP, RSDT, MADT) are in physical low memory
-        // that is only accessible via the boot identity mapping.
+        // Phase 2: Set up page tables (can now access all physical memory).
+        paging::init();
+
+        // Phase 3: Re-detect real RAM now that page tables are active.
+        let real_ram = arch::e820::detect_memory();
+        crate::println!("[e820] detect_memory returned {} MiB", real_ram / (1024 * 1024));
+        if real_ram > 1 << 30 {
+            crate::println!("[e820] Re-initializing frame allocator with {} MiB", real_ram / (1024 * 1024));
+            frame::reinit(real_ram);
+        }
+
         acpi::init();
 
-        paging::init();
+        // Initialize GOP framebuffer AFTER paging is set up.
+        // The framebuffer is typically above 1GB (e.g. 0xFD000000) and needs
+        // to be mapped through the page tables before we can write to it.
+        arch::framebuffer::framebuffer_init();
+
+        // Post-framebuffer diagnostic: show what was discovered
+        // (ACPI ran before framebuffer, so its messages went to invisible VGA/serial)
+        crate::println!("--- Bare Metal Boot Diagnostics ---");
+        crate::println!("Framebuffer: {}x{} @ {:#x} (bpp={})",
+            arch::framebuffer::framebuffer_width(),
+            arch::framebuffer::framebuffer_height(),
+            arch::framebuffer::framebuffer_addr(),
+            arch::framebuffer::framebuffer_bpp());
+        crate::println!("RAM: {} MiB", unsafe { frame::TOTAL_RAM } / (1024 * 1024));
+        crate::println!("CPU cores detected: {}", unsafe { smp::CPU_COUNT });
+        crate::println!("LAPIC addr: {:#x}", unsafe { crate::acpi::MADT_LOCAL_APIC_ADDR });
+        crate::println!("I/O APIC addr: {:#x}", unsafe { crate::acpi::MADT_IO_APIC_ADDR });
+        crate::println!("--- End Diagnostics ---");
 
         // Map the LAPIC MMIO page as Uncacheable — MMIO must not be cached!
         unsafe { paging::map_page_uc(crate::acpi::MADT_LOCAL_APIC_ADDR as usize & !0xFFF); }

@@ -34,7 +34,7 @@ static mut BITMAP: [u64; MAX_WORDS] = [0; MAX_WORDS];
 /// Actual number of frames we manage (set at boot from detected RAM).
 static mut ACTUAL_WORDS: usize = 0;
 static mut ACTUAL_FRAME_COUNT: usize = 0;
-static mut TOTAL_RAM: usize = 0;
+pub static mut TOTAL_RAM: usize = 0;
 
 /// Scan hint so allocate_frame doesn't restart from 0 every time.
 static NEXT_FREE: AtomicUsize = AtomicUsize::new(0);
@@ -147,6 +147,25 @@ pub fn init() {
         mark_used(0, 0x100000);
 
         NEXT_FREE.store(frame_of(kernel_end) / 64, Ordering::Relaxed);
+    }
+}
+
+/// Reinitialize the frame allocator with a new RAM size.
+/// Called after paging::init() when the real memory map becomes accessible.
+/// Only expands the tracked range — does NOT wipe existing allocations.
+pub fn reinit(new_ram_size: usize) {
+    unsafe {
+        set_total_ram(new_ram_size);
+        // Expand ACTUAL_WORDS/ACTUAL_FRAME_COUNT to cover the new range.
+        // Existing bitmap entries (already-allocated frames) are preserved.
+        ACTUAL_WORDS = (TOTAL_RAM / 4096 + 63) / 64;
+        ACTUAL_FRAME_COUNT = ACTUAL_WORDS * 64;
+        if ACTUAL_WORDS > MAX_WORDS {
+            ACTUAL_WORDS = MAX_WORDS;
+            ACTUAL_FRAME_COUNT = MAX_WORDS * 64;
+        }
+        crate::println!("[frame] Reinit: {} MiB, {} frames, {} words",
+            TOTAL_RAM / (1024 * 1024), ACTUAL_FRAME_COUNT, ACTUAL_WORDS);
     }
 }
 

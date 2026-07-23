@@ -11,7 +11,7 @@
 pub fn detect_memory() -> usize {
     extern "C" {
         static mb_magic: u32;
-        static mb_info: u32;
+        static mb_info: u64;
     }
 
     unsafe {
@@ -47,10 +47,23 @@ pub fn detect_memory() -> usize {
             return 1 << 30;
         }
 
+        // Map the memory map buffer through page tables.
+        // After paging::init(), NO physical addresses are identity-mapped.
+        // We must explicitly map every page we want to read.
+        {
+            let page_base = mmap_addr & !0xFFF;
+            let page_count = (mmap_len + 0xFFF) / 0x1000;
+            for i in 0..page_count {
+                crate::paging::map_page(page_base + i * 0x1000);
+            }
+            crate::println!("[e820] Mapped {} pages for memory map at 0x{:X}", page_count, mmap_addr);
+        }
+
         let mut total_usable: usize = 0;
         let mut offset = 0usize;
 
         crate::println!("[e820] Parsing memory map at 0x{:X}, length {} bytes", mmap_addr, mmap_len);
+        crate::println!("[e820] mmap_addr is {} 1GB", if mmap_addr < 0x40000000 { "below" } else { "ABOVE" });
 
         while offset + 24 <= mmap_len {
             let entry = (mmap_addr + offset) as *const u8;
